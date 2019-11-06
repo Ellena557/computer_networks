@@ -14,7 +14,6 @@
 #include <iostream>
 #include <time.h>
 #include <cstring>
-#include <arpa/inet.h>
 #include <random>
 
 using namespace std;
@@ -22,13 +21,12 @@ using namespace std;
 u_char srcIP[4];
 u_char srcMAC[6];
 
-struct etherHeader {
-	u_char dstMac[6];
-	u_char srcMac[6];
-	u_short etherType;				// for ARP: 0x0806
-};
 
-struct arpHeader {
+struct packetARP {
+	u_char dstMac0[6];				// here we have dstMac0 = dstMac but in general case it isn't like this
+	u_char srcMac0[6];
+	u_short etherType;				// for ARP: 0x0806
+
 	u_short htype;					// hardware type
 	u_short ptype;					// protocol type
 	u_char hlen;					// hardware address length
@@ -40,10 +38,6 @@ struct arpHeader {
 	u_char dstIp[4];				// target IP address
 };
 
-struct arpPacket {
-	struct etherHeader ethData;
-	struct arpHeader arpData;
-};
 
 void printField(int type, u_char* info) {
 	/*
@@ -61,7 +55,7 @@ void printField(int type, u_char* info) {
 	}
 
 	if (type == 1) {
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < 4; i++) {
 			printf("%d", info[i]);
 			if (i < 3) {
 				printf(".");
@@ -71,9 +65,10 @@ void printField(int type, u_char* info) {
 }
 
 
-/* This function gets:
-- source MAC
-- source IP
+/* This function finds:
+- device MAC 
+- device IP
+by the name of the device
 */
 void fillTheFields(char* device, u_char* mac, u_char* ip) {
 	int s = socket(PF_INET, SOCK_DGRAM, 0);
@@ -87,7 +82,37 @@ void fillTheFields(char* device, u_char* mac, u_char* ip) {
 	memcpy(mac, buffer.ifr_hwaddr.sa_data, 6);
 
 	ioctl(s, SIOCGIFADDR, &buffer);
-	memcpy(ip, &(((struct sockaddr_in*) & (buffer.ifr_addr))->sin_addr), 4);
+	memcpy(ip, &(((struct sockaddr_in*) & (buffer.ifr_addr)) -> sin_addr), 4);
+
+	close(s);
+}
+
+
+void fillMACfield(char* device, u_char* mac) {
+	int s = socket(PF_INET, SOCK_DGRAM, 0);
+
+	struct ifreq buffer;
+	memset(&buffer, 0x00, sizeof(buffer));
+	buffer.ifr_addr.sa_family = AF_INET;
+	strcpy(buffer.ifr_name, device);
+
+	ioctl(s, SIOCGIFHWADDR, &buffer);
+	memcpy(mac, buffer.ifr_hwaddr.sa_data, 6);
+
+	close(s);
+}
+
+
+void fillIPfield(char* device, u_char* ip) {
+	int s = socket(PF_INET, SOCK_DGRAM, 0);
+
+	struct ifreq buffer;
+	memset(&buffer, 0x00, sizeof(buffer));
+	buffer.ifr_addr.sa_family = AF_INET;
+	strcpy(buffer.ifr_name, device);
+
+	ioctl(s, SIOCGIFADDR, &buffer);
+	memcpy(ip, &(((struct sockaddr_in*) & (buffer.ifr_addr)) -> sin_addr), 4);
 
 	close(s);
 }
@@ -95,15 +120,15 @@ void fillTheFields(char* device, u_char* mac, u_char* ip) {
 
 void getAllDevices() {
 	char errbuf[PCAP_ERRBUF_SIZE];
-	pcap_if_t* alldevs;
-	int status = pcap_findalldevs(&alldevs, errbuf);
+	pcap_if_t* alldevs;										// Item in a list of interfaces, used by pcap_findalldevs(): next, name, description, addresses, flags
+	int status = pcap_findalldevs(&alldevs, errbuf);		// this is a list of devices that can be opened with pcap_open_live()
 
 	cout << "START PRINTING ALL DEVICES" << endl;
 	cout << "device name | device IP | device MAC " << endl;
-	for (pcap_if_t* d = alldevs; d != NULL; d = d->next) {
-		printf("%s:", d->name);
+	for (pcap_if_t* d = alldevs; d != NULL; d = d -> next) {
+		printf("%s:", d -> name);
 		cout << " | ";
-		for (pcap_addr_t* a = d->addresses; a != NULL; a = a->next) {
+		for (pcap_addr_t* a = d -> addresses; a != NULL; a = a->next) {
 			if (a->addr->sa_family == AF_INET) {
 				u_char devIP[4];
 				u_char devMAC[6];
@@ -115,42 +140,49 @@ void getAllDevices() {
 				//printf(" %s", inet_ntoa(((struct sockaddr_in*)a->addr)->sin_addr));
 			}
 		}
-		printf("\n");
+		cout << endl;
 	}
 	cout << "END PRINTING ALL DEVICES" << endl;
 }
 
-void sendARPpacket(u_char* randMAC, u_char* randIP, u_char* mainHandler) {
-	struct arpPacket myPacket;
-	memcpy(myPacket.ethData.dstMac, srcMAC, 6);
-	memcpy(myPacket.ethData.srcMac, randMAC, 6);
-	myPacket.ethData.etherType = htons(0x0806);
-	myPacket.arpData.htype = 1;	// ethernet
-	myPacket.arpData.ptype = htons(0x0800);		//ipv4
-	myPacket.arpData.hlen = 6; // ethernet mac addresses have length 6
-	myPacket.arpData.plen = 4; // IPv4 addresses have length 4
-	myPacket.arpData.operation = htons(0x0002); // REPLY
-	memcpy(myPacket.arpData.srcMac, randMAC, 6);
-	memcpy(myPacket.arpData.srcIp, randIP, 4);
-	memcpy(myPacket.arpData.dstMac, srcMAC, 6);
-	memcpy(myPacket.arpData.dstIp, srcIP, 4);
 
-	pcap_t* packHandle = (pcap_t*)mainHandler;
-	int result = pcap_sendpacket(packHandle, (u_char*)&myPacket, sizeof(myPacket));
+void sendARPpacket(u_char* randMAC, u_char* randIP, pcap_t* mainHandler) {
+	struct packetARP myPacket;
+	memcpy(myPacket.dstMac0, srcMAC, 6);
+	memcpy(myPacket.srcMac0, randMAC, 6);
+	myPacket.etherType = htons(0x0806);		// ARP 
+	myPacket.htype = 1;						// ethernet
+	myPacket.ptype = htons(0x0800);			// IPv4
+	myPacket.hlen = 6;						// ethernet mac addresses have length 6
+	myPacket.plen = 4;						// IPv4 addresses have length 4
+	myPacket.operation = htons(0x0002);		// REPLY
+	memcpy(myPacket.srcMac, randMAC, 6);
+	memcpy(myPacket.srcIp, randIP, 4);
+	memcpy(myPacket.dstMac, srcMAC, 6);
+	memcpy(myPacket.dstIp, srcIP, 4);
+
+	/*
+	it allows to send a raw packet to the network
+	p = interface that will be used to send the packet
+	buf = contains the data of the packet to send
+	The return value is 0 if the packet is succesfully sent, -1 otherwise.
+	*/
+	int result = pcap_sendpacket(mainHandler, (u_char*)&myPacket, sizeof(myPacket));
+
 	if (result == 0) {
-		cout << "The reply has been successfully sent" << endl;
-	}
-	else {
-		cout << "An error occured while sending a reply" << endl;
+		cout << "The reply has been successfully sent!" << endl;
+	} else {
+		cout << "An error occured while sending a reply!" << endl;
 	}
 }
 
-void getOneRandomDevice(u_char* mainHandler) {
+
+void getOneRandomDevice(pcap_t* mainHandler) {
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_if_t* alldevs;
 	int status = pcap_findalldevs(&alldevs, errbuf);
 
-	cout << "RANDOM DEVICE START" << endl;
+	//cout << "RANDOM DEVICE START" << endl;
 	int numDevs = 0;
 	for (pcap_if_t* d = alldevs; d != NULL; d = d->next) {
 		numDevs++;
@@ -169,62 +201,68 @@ void getOneRandomDevice(u_char* mainHandler) {
 			break;
 		}
 		curNum++;
-
 	}
+
 	cout << "Random device MAC: ";
 	printField(0, randMAC);
 	cout << endl;
 	cout << "Random device IP: ";
 	printField(1, randIP);
 	cout << endl;
-	cout << "RANDOM DEVICE END" << endl;
+
+	//cout << "RANDOM DEVICE END" << endl;
 	sendARPpacket(randMAC, randIP, mainHandler);
 }
 
 
-
-
 int main(int argc, char* argv[])
 {
-	int numPacketsToSend;
+	int numPacketsToSend;			// required number of ARP packets
 	cout << "Print how many ARP replies you want to send: " << endl;
 	cin >> numPacketsToSend;
 	cout << endl;
 	char errbuf[PCAP_ERRBUF_SIZE];
 
+	// define our device (it returns the first valid device in the system)
 	char* dev = pcap_lookupdev(errbuf);
-	if (dev == NULL) {
-		cout << "ERROR!" << endl;
-	}
 
-	fillTheFields(dev, srcMAC, srcIP);
-
+	fillTheFields(dev, srcMAC, srcIP);		
+	//fillMACfield(dev, srcMAC);
+	//fillIPfield(dev, srcIP);
 	cout << "My device: " << dev << endl;
-	//cout << "SRC MAC" << srcMAC[0] << ":" << srcMAC[1] << " : " << srcMAC[2] << " : " << srcMAC[3] << " : " << srcMAC[4] << " : " << srcMAC[5] << endl;
-	cout << "SRC MAC: ";
+	cout << "My MAC: ";
 	printField(0, srcMAC);
 	cout << endl;
-	cout << "SRC IP: ";
+	cout << "My IP: ";
 	printField(1, srcIP);
 	cout << endl;
 	cout << endl;
-	getAllDevices();
-	//getOneRandomDevice();
+
+	// Uncomment this to see all possible devices
+	//getAllDevices();
 	
 	for (int i = 0; i < numPacketsToSend; i++) {
 		cout << "Sending ARP reply number " << i + 1 << endl;
-		pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
-		if (handle == NULL) {
-			cout << "ERROR";
-		}
-		getOneRandomDevice((u_char*)handle);
+
+		/*
+		This function is used to obtain a packet capture descriptor to look at packets on the network
+		device = string that specifies the network device to open
+		snaplen = the maximum number of bytes to capture
+		promisc = if the interface is to be put into promiscuous mode
+		to_ms = the read timeout in milliseconds
+		errbuf = used to return error or warning text
+		*/
+		pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 2000, errbuf);
+		getOneRandomDevice(handle);
+
+		/*
+		This function closes the files associated with p and deallocates resources.
+		*/
 		pcap_close(handle);
 
 		cout << "------------------------------" << endl;
 		cout << endl;
 	}
-	
 
 	return 0;
-
 }
