@@ -45,16 +45,6 @@ struct arpPacket {
 	struct arpHeader arpData;
 };
 
-void print_octets(const u_char* data, int size) {
-	for (int i = 0; i < size; i++) {
-		if (i) {
-			printf(i % 16 == 0 ? "\n" : " ");
-		}
-		printf("%02x", data[i]);
-	}
-	printf("\n");
-}
-
 void printField(int type, u_char* info) {
 	/*
 	0 - MAC
